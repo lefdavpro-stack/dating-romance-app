@@ -37,8 +37,7 @@ const loadParticipants = (sessionId) => {
   const [pendingResponses, setPendingResponses] = useState({}); // { id: "accepted" | "refused" }
   const [likeAnim, setLikeAnim] = useState(null);
 
-  const theyLikeMe = [1, 3];
-
+  
   const handleLike = (p, type) => {
     // Allow changing: if same type clicked again, deselect
     if (likes[p.id] === type) {
@@ -51,19 +50,21 @@ const loadParticipants = (sessionId) => {
   };
 
   const handleValidate = () => {
-    // Simulate their like types
-    const theirLikes = { 1: "love", 3: "friend" }; // Sophie: love, Camille: friend
-    // Mutual match only if SAME type on both sides
-    const matches = participants.filter(p =>
-      likes[p.id] && theyLikeMe.includes(p.id) && likes[p.id] === theirLikes[p.id]
-    );
-    // Pending: they liked the user but user didn't like them back (or different type)
-    const theyLikedMe = participants.filter(p => theyLikeMe.includes(p.id));
-    const pending = theyLikedMe
-      .filter(p => !matches.find(m => m.id === p.id))
-      .map(p => ({ ...p, theirType: theirLikes[p.id] }));
-    setResultsData({ matches, pending });
-    setScreen("results");
+    const likesArray = Object.entries(likes).map(([id, type]) => {
+      const p = participants.find(x => x.id === parseInt(id));
+      return { toEmail: p ? p.email : "", type: type };
+    });
+
+    fetch(`${API_URL}?action=saveLikes&fromEmail=${encodeURIComponent(user.email)}&sessionId=${selectedSession.id}&likes=${encodeURIComponent(JSON.stringify(likesArray))}`)
+      .then(res => res.json())
+      .then(() => {
+        fetch(`${API_URL}?action=getResults&email=${encodeURIComponent(user.email)}&sessionId=${selectedSession.id}`)
+          .then(res => res.json())
+          .then(data => {
+            setResultsData(data);
+            setScreen("results");
+          });
+      });
   };
 
   const css = `
