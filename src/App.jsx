@@ -418,7 +418,7 @@ function ParticipantsScreen({ session, participants, likes, likeAnim, onLike, on
         {participants.map((p, i) => (
           <div key={p.id} className="fade-up" style={{ animationDelay: `${i * 0.08}s`, background: "rgba(255,255,255,0.04)", border: `1px solid ${likes[p.id] === "love" ? "rgba(232,116,138,0.6)" : likes[p.id] === "friend" ? "rgba(100,200,100,0.5)" : "rgba(255,255,255,0.07)"}`, borderRadius: 10, overflow: "hidden", transition: "all 0.2s", display: "flex", flexDirection: "column", height: "100px" }}>
             <div style={{ padding: "7px 10px 4px", flex: 1 }}>
-              <div style={{ color: "#fff", fontSize: 12, fontWeight: "500", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
+              <div style={{ color: "#fff", fontSize: 12, fontWeight: "500", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.prenom} {p.nom ? p.nom.substring(0,2)+"." : ""}</div>
               <div style={{ color: "rgba(255,255,255,0.45)", fontSize: 10, fontFamily: "sans-serif", marginTop: 2 }}>{p.age} ans</div>
               <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10, fontFamily: "sans-serif", marginTop: 1 }}>{p.hometown}</div>
             </div>
@@ -485,7 +485,7 @@ function ResultsScreen({ resultsData, pendingResponses, onRespond, onFinish }) {
               {matches.map(p => (
                 <div key={p.id} style={{ background: "rgba(232,116,138,0.06)", border: "1px solid rgba(232,116,138,0.25)", borderRadius: 10, padding: "10px 14px", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div>
-                    <div style={{ color: "#fff", fontSize: 13, fontWeight: "bold" }}>{p.name}</div>
+                    <div style={{ color: "#fff", fontSize: 13, fontWeight: "bold" }}>{p.prenom} {p.nom ? p.nom.substring(0,2)+"." : ""}</div>
                     <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, fontFamily: "sans-serif", marginTop: 2 }}>{p.age} ans · {p.hometown}</div>
                   </div>
                   <div style={{ fontSize: 20 }}>💘</div>
@@ -505,9 +505,9 @@ function ResultsScreen({ resultsData, pendingResponses, onRespond, onFinish }) {
               <div key={p.id} style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "10px 14px", marginBottom: 8 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                   <div>
-                    <div style={{ color: "#fff", fontSize: 13, fontWeight: "bold" }}>{p.name}</div>
+                    <div style={{ color: "#fff", fontSize: 13, fontWeight: "bold" }}>{p.prenom} {p.nom ? p.nom.substring(0,2)+"." : ""}</div>
                     <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, fontFamily: "sans-serif", marginTop: 2 }}>
-                      {p.age} ans · {p.hometown} · {p.theirType === "love" ? "❤️ Plus que de l'amitié" : "💚 Amitié"}
+                      {p.age ? p.age+" ans" : ""} · {p.ville} · {p.theirType === "love" ? "❤️ Plus que de l'amitié" : "💚 Amitié"}
                     </div>
                   </div>
                 </div>
@@ -542,7 +542,7 @@ function ResultsScreen({ resultsData, pendingResponses, onRespond, onFinish }) {
               <div key={p.id} style={{ marginBottom: 8 }}>
                 <div style={{ background: "rgba(255,255,255,0.02)", border: `1px solid ${pendingResponses[p.id] === "accepted" ? "rgba(232,116,138,0.2)" : "rgba(255,255,255,0.05)"}`, borderRadius: 10, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div>
-                    <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 13 }}>{p.name}</div>
+                    <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 13 }}>{p.prenom} {p.nom ? p.nom.substring(0,2)+"." : ""}</div>
                     <div style={{ color: "rgba(255,255,255,0.25)", fontSize: 11, fontFamily: "sans-serif", marginTop: 2 }}>{p.age} ans · {p.hometown}</div>
                   </div>
                   <div style={{ fontSize: 13, fontFamily: "sans-serif", color: pendingResponses[p.id] === "accepted" ? "#E8748A" : "rgba(255,255,255,0.3)" }}>
