@@ -15,44 +15,53 @@ export default function App() {
   const [likeAnim, setLikeAnim] = useState(null);
   const [loginError, setLoginError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
 
-  const handleLogin = (email) => {
+  const apiCall = (params) => {
+    const q = Object.entries(params).map(([k,v]) => k+"="+encodeURIComponent(v)).join("&");
+    return fetch(API_URL+"?"+q).then(r => r.json());
+  };
+
+  const handleLogin = (email, pin) => {
     setLoginError("");
     setIsLoading(true);
-    fetch(`${API_URL}?action=checkUser&email=${encodeURIComponent(email)}`)
-      .then(res => res.json())
+    apiCall({ action: "checkUser", email, pin })
       .then(data => {
         setIsLoading(false);
-        if (!data.found) {
-          setLoginError("Cet email n'est pas inscrit à un événement.");
-          return;
-        }
-        if (data.cancelled) {
-          setLoginError("Votre inscription a été annulée.");
-          return;
-        }
-        const userData = { prenom: data.prenom, nom: data.nom, email };
+        if (data.wrongPin) { setLoginError("Code PIN incorrect."); return; }
+        if (!data.found) { setLoginError("Cet email n'est pas inscrit."); return; }
+        if (data.cancelled) { setLoginError("Votre inscription a été annulée."); return; }
+        const userData = { prenom: data.prenom, nom: data.nom, email, profileCompleted: data.profileCompleted, ville: data.ville, age: data.age };
         setUser(userData);
         setSessions(data.sessions);
+        if (!data.profileCompleted) { setScreen("profile"); return; }
         const unsubmitted = data.sessions.filter(s => !s.submitted);
         if (unsubmitted.length === 1 && data.sessions.length === 1) {
           setSelectedSession(unsubmitted[0]);
           loadParticipants(unsubmitted[0].id, email);
           setScreen("participants");
-        } else {
-          setScreen("sessions");
-        }
+        } else { setScreen("sessions"); }
       })
-      .catch(() => {
+      .catch(() => { setIsLoading(false); setLoginError("Erreur de connexion."); });
+  };
+
+  const handleProfileSave = (profileData) => {
+    setIsLoading(true);
+    apiCall({ action: "saveProfile", email: user.email, ...profileData })
+      .then(() => {
         setIsLoading(false);
-        setLoginError("Erreur de connexion. Réessayez.");
+        setUser(prev => ({ ...prev, profileCompleted: true, ville: profileData.ville }));
+        const unsubmitted = sessions.filter(s => !s.submitted);
+        if (unsubmitted.length === 1 && sessions.length === 1) {
+          setSelectedSession(unsubmitted[0]);
+          loadParticipants(unsubmitted[0].id, user.email);
+          setScreen("participants");
+        } else { setScreen("sessions"); }
       });
   };
 
   const loadParticipants = (sessionId, email) => {
-    fetch(`${API_URL}?action=getParticipants&sessionId=${sessionId}&email=${encodeURIComponent(email)}`)
-      .then(res => res.json())
-      .then(data => setParticipants(data));
+    apiCall({ action: "getParticipants", sessionId, email }).then(data => setParticipants(data));
   };
 
   const handleSessionSelect = (session) => {
@@ -61,11 +70,11 @@ export default function App() {
     setPendingResponses({});
     if (session.submitted) {
       setIsLoading(true);
-      fetch(`${API_URL}?action=getResults&email=${encodeURIComponent(user.email)}&sessionId=${session.id}`)
-        .then(res => res.json())
+      apiCall({ action: "getResults", email: user.email, sessionId: session.id })
         .then(data => {
           setIsLoading(false);
           setResultsData(data);
+          if (data.savedResponses) setPendingResponses(data.savedResponses);
           setScreen("results");
         });
     } else {
@@ -75,12 +84,12 @@ export default function App() {
   };
 
   const handleLike = (p, type) => {
-    if (p.statut === "annulation") return;
+    if (p.statut === "annulation" || p.statut === "Annulation") return;
     if (likes[p.id] === type) {
-      setLikes((prev) => { const n = {...prev}; delete n[p.id]; return n; });
+      setLikes(prev => { const n = {...prev}; delete n[p.id]; return n; });
       return;
     }
-    setLikes((prev) => ({ ...prev, [p.id]: type }));
+    setLikes(prev => ({ ...prev, [p.id]: type }));
     setLikeAnim(p.id);
     setTimeout(() => setLikeAnim(null), 700);
   };
@@ -89,17 +98,14 @@ export default function App() {
     setIsLoading(true);
     const likesArray = Object.entries(likes).map(([id, type]) => {
       const p = participants.find(x => x.id === parseInt(id));
-      return { toEmail: p ? p.email : "", type: type };
+      return { toEmail: p ? p.email : "", type };
     });
-    fetch(`${API_URL}?action=saveLikes&fromEmail=${encodeURIComponent(user.email)}&sessionId=${selectedSession.id}&likes=${encodeURIComponent(JSON.stringify(likesArray))}`)
-      .then(res => res.json())
-      .then(() => {
-        return fetch(`${API_URL}?action=getResults&email=${encodeURIComponent(user.email)}&sessionId=${selectedSession.id}`);
-      })
-      .then(res => res.json())
+    apiCall({ action: "saveLikes", fromEmail: user.email, sessionId: selectedSession.id, likes: JSON.stringify(likesArray) })
+      .then(() => apiCall({ action: "getResults", email: user.email, sessionId: selectedSession.id }))
       .then(data => {
         setIsLoading(false);
         setResultsData(data);
+        if (data.savedResponses) setPendingResponses(data.savedResponses);
         setScreen("results");
       })
       .catch(() => {
@@ -109,56 +115,52 @@ export default function App() {
       });
   };
 
+  const handleRespond = (p, resp) => {
+    setPendingResponses(prev => ({ ...prev, [p.email]: resp }));
+    apiCall({ action: "saveResponse", sessionId: selectedSession.id, userEmail: user.email, fromEmail: p.email, response: resp });
+  };
+
+  const handleRefresh = () => {
+    setIsLoading(true);
+    apiCall({ action: "getResults", email: user.email, sessionId: selectedSession.id })
+      .then(data => {
+        setIsLoading(false);
+        setResultsData(data);
+        if (data.savedResponses) {
+          setPendingResponses(prev => ({ ...prev, ...data.savedResponses }));
+        }
+      });
+  };
+
   const css = `
     @keyframes fadeUp { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
     @keyframes heartPop { 0% { transform:scale(1); } 50% { transform:scale(1.5); } 100% { transform:scale(1); } }
     @keyframes matchReveal { from { opacity:0; transform:scale(0.8); } to { opacity:1; transform:scale(1); } }
-    @keyframes bgShift {
-      0%   { background-position: 0% 50%; }
-      50%  { background-position: 100% 50%; }
-      100% { background-position: 0% 50%; }
-    }
-    @keyframes floatHeart {
-      0%   { transform: translateY(0) scale(1) rotate(0deg); opacity: 1; }
-      80%  { opacity: 0.6; }
-      100% { transform: translateY(-680px) scale(0.3) rotate(20deg); opacity: 0; }
-    }
-    @keyframes sway {
-      0%,100% { margin-left: 0px; }
-      25%      { margin-left: 18px; }
-      75%      { margin-left: -18px; }
-    }
+    @keyframes bgShift { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
+    @keyframes floatHeart { 0% { transform: translateY(0) scale(1); opacity: 1; } 80% { opacity: 0.6; } 100% { transform: translateY(-680px) scale(0.3); opacity: 0; } }
+    @keyframes sway { 0%,100% { margin-left: 0px; } 25% { margin-left: 18px; } 75% { margin-left: -18px; } }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     .fade-up { animation: fadeUp 0.5s ease both; }
     .heart-pop { animation: heartPop 0.4s ease; }
     .match-reveal { animation: matchReveal 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
     ::-webkit-scrollbar { width: 0; }
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50%       { opacity: 0.55; }
-    }
-    .heart-bubble {
-      position: absolute;
-      bottom: 70px;
-      animation: floatHeart 3.5s ease-in forwards, sway 1.2s ease-in-out infinite;
-      pointer-events: none;
-      font-size: 22px;
-      z-index: 10;
-    }
-    .btn-pulse {
-      animation: pulse 2s ease-in-out infinite;
-    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+    .heart-bubble { position: absolute; bottom: 70px; animation: floatHeart 3.5s ease-in forwards, sway 1.2s ease-in-out infinite; pointer-events: none; font-size: 22px; z-index: 10; }
+    .btn-pulse { animation: pulse 2s ease-in-out infinite; }
   `;
+
+  if (isAdmin) return <AdminPanel apiCall={apiCall} onLogout={() => setIsAdmin(false)} />;
 
   return (
     <div style={{ minHeight: "100vh", background: "#0D0D0F", fontFamily: "'Georgia', serif" }}>
       <style>{css}</style>
       <div style={{ maxWidth: 480, margin: "0 auto", minHeight: "100vh", display: "flex", flexDirection: "column", position: "relative" }}>
         <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-          {screen === "login" && <LoginScreen onLogin={handleLogin} loginError={loginError} isLoading={isLoading} />}
-          {screen === "sessions" && <SessionsScreen sessions={sessions} onSelect={handleSessionSelect} onBack={() => { setScreen("login"); setLoginError(""); }} />}
+          {screen === "login" && <LoginScreen onLogin={handleLogin} loginError={loginError} isLoading={isLoading} onAdmin={() => setIsAdmin(true)} apiCall={apiCall} />}
+          {screen === "profile" && <ProfileScreen user={user} onSave={handleProfileSave} />}
+          {screen === "sessions" && <SessionsScreen sessions={sessions} onSelect={handleSessionSelect} user={user} onBack={() => { setScreen("login"); setLoginError(""); }} />}
           {screen === "participants" && <ParticipantsScreen session={selectedSession} participants={participants} likes={likes} likeAnim={likeAnim} onLike={handleLike} onValidate={handleValidate} onBack={() => { setLikes({}); setSelectedSession(null); setScreen("sessions"); }} />}
-          {screen === "results" && resultsData && <ResultsScreen resultsData={resultsData} pendingResponses={pendingResponses} onRespond={(id, resp) => setPendingResponses(prev => ({...prev, [id]: resp}))} onFinish={() => setScreen("thankyou")} />}
+          {screen === "results" && resultsData && <ResultsScreen resultsData={resultsData} pendingResponses={pendingResponses} onRespond={handleRespond} onFinish={() => setScreen("thankyou")} onRefresh={handleRefresh} />}
           {screen === "thankyou" && <ThankYouScreen />}
         </div>
         {isLoading && (
@@ -178,35 +180,16 @@ function ProgressBar({ step }) {
     <div style={{ padding: "10px 24px 0", flexShrink: 0 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 0 }}>
         {steps.map((label, i) => {
-          const num = i + 1;
-          const active = num === step;
-          const done = num < step;
+          const num = i + 1; const active = num === step; const done = num < step;
           return (
             <React.Fragment key={i}>
               <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
-                <div style={{
-                  width: 24, height: 24, borderRadius: "50%",
-                  background: done ? "#E8748A" : active ? "linear-gradient(135deg, #E8748A, #C94060)" : "rgba(255,255,255,0.1)",
-                  border: active ? "none" : done ? "none" : "1px solid rgba(255,255,255,0.2)",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  fontSize: 11, color: done || active ? "#fff" : "rgba(255,255,255,0.3)",
-                  fontFamily: "sans-serif", fontWeight: "bold", transition: "all 0.3s"
-                }}>
+                <div style={{ width: 24, height: 24, borderRadius: "50%", background: done ? "#E8748A" : active ? "linear-gradient(135deg, #E8748A, #C94060)" : "rgba(255,255,255,0.1)", border: active || done ? "none" : "1px solid rgba(255,255,255,0.2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: done || active ? "#fff" : "rgba(255,255,255,0.3)", fontFamily: "sans-serif", fontWeight: "bold" }}>
                   {done ? "✓" : num}
                 </div>
-                <div style={{
-                  fontSize: 9, fontFamily: "sans-serif", letterSpacing: 0.5,
-                  color: active ? "#E8748A" : done ? "rgba(255,255,255,0.6)" : "rgba(255,255,255,0.25)",
-                  transition: "all 0.3s"
-                }}>{label}</div>
+                <div style={{ fontSize: 9, fontFamily: "sans-serif", letterSpacing: 0.5, color: active ? "#E8748A" : done ? "rgba(255,255,255,0.6)" : "rgba(255,255,255,0.25)" }}>{label}</div>
               </div>
-              {i < steps.length - 1 && (
-                <div style={{
-                  height: 2, width: 48, marginBottom: 14,
-                  background: done ? "#E8748A" : "rgba(255,255,255,0.1)",
-                  transition: "all 0.3s"
-                }} />
-              )}
+              {i < 2 && <div style={{ height: 2, width: 48, marginBottom: 14, background: done ? "#E8748A" : "rgba(255,255,255,0.1)" }} />}
             </React.Fragment>
           );
         })}
@@ -215,54 +198,60 @@ function ProgressBar({ step }) {
   );
 }
 
-function LoginScreen({ onLogin, loginError, isLoading }) {
+function LoginScreen({ onLogin, loginError, isLoading, onAdmin, apiCall }) {
   const [firstName, setFirstName] = React.useState("");
   const [lastName, setLastName] = React.useState("");
   const [email, setEmail] = React.useState("");
+  const [pin, setPin] = React.useState("");
   const [error, setError] = React.useState("");
   const [rgpd, setRgpd] = React.useState(false);
+  const [resetMode, setResetMode] = React.useState(false);
+  const [resetEmail, setResetEmail] = React.useState("");
+  const [resetMsg, setResetMsg] = React.useState("");
 
-  const inputStyle = {
-    width: "100%", background: "rgba(255,255,255,0.12)", border: "1px solid rgba(232,116,138,0.4)",
-    borderRadius: 4, padding: "11px 14px", color: "#fff", fontSize: 13, fontFamily: "sans-serif",
-    outline: "none", boxSizing: "border-box"
-  };
+  const inputStyle = { width: "100%", background: "rgba(255,255,255,0.12)", border: "1px solid rgba(232,116,138,0.4)", borderRadius: 4, padding: "11px 14px", color: "#fff", fontSize: 13, fontFamily: "sans-serif", outline: "none", boxSizing: "border-box" };
 
   const handleSubmit = () => {
-    if (!firstName.trim() || !lastName.trim() || !email.trim()) {
-      setError("Veuillez remplir tous les champs.");
-      return;
-    }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      setError("Adresse email invalide.");
-      return;
-    }
-    if (!rgpd) {
-      setError("Veuillez accepter la politique de confidentialité pour continuer.");
-      return;
-    }
+    if (!firstName.trim() || !lastName.trim() || !email.trim() || !pin.trim()) { setError("Veuillez remplir tous les champs."); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setError("Adresse email invalide."); return; }
+    if (!rgpd) { setError("Veuillez accepter la politique de confidentialité."); return; }
     setError("");
-    onLogin(email.trim());
+    onLogin(email.trim().toLowerCase(), pin.trim());
+  };
+
+  const handleResetPin = () => {
+    if (!resetEmail.trim()) { setResetMsg("Entrez votre email."); return; }
+    setResetMsg("Envoi en cours...");
+    apiCall({ action: "resetPin", email: resetEmail.trim().toLowerCase() }).then(data => {
+      setResetMsg(data.success ? "Nouveau code PIN envoyé par email !" : "Email non trouvé.");
+    });
   };
 
   const displayError = error || loginError;
 
-  return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-      padding: 32, gap: 20, position: "relative", overflow: "hidden",
-      background: "linear-gradient(135deg, #2d0015, #1a0030, #2d0015)", backgroundSize: "400% 400%", animation: "bgShift 8s ease infinite" }}>
-      <div style={{ position: "absolute", inset: 0, background: "radial-gradient(ellipse at 30% 60%, rgba(232,116,138,0.18) 0%, transparent 60%)", pointerEvents: "none" }} />
-
-      <div className="fade-up" style={{ textAlign: "center", position: "relative", zIndex: 1 }}>
-        <img src={LOGO_SRC} alt="Dating Romance" style={{ width: 110, height: "auto", display: "block", margin: "0 auto" }} />
-        <div style={{ marginTop: 8, color: "#fff", fontSize: 12, fontFamily: "sans-serif", opacity: 0.75, textAlign: "center", maxWidth: 240, margin: "8px auto 0", lineHeight: 1.5 }}>
-          Speed Dating et Soirées Dansantes pour célibataires dans des lieux élégants.
-        </div>
-        <div style={{ marginTop: 10, color: "rgba(255,255,255,0.45)", fontSize: 11, fontFamily: "sans-serif", opacity: 0.85, textAlign: "center" }}>
-          Identifiez-vous pour accéder à votre session
+  if (resetMode) {
+    return (
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 32, gap: 20, background: "linear-gradient(135deg, #2d0015, #1a0030, #2d0015)", backgroundSize: "400% 400%", animation: "bgShift 8s ease infinite" }}>
+        <img src={LOGO_SRC} alt="Dating Romance" style={{ width: 110, height: "auto" }} />
+        <div style={{ color: "#fff", fontSize: 18, textAlign: "center" }}>Réinitialiser mon code PIN</div>
+        <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12 }}>
+          <input type="email" placeholder="Votre adresse email" value={resetEmail} onChange={e => setResetEmail(e.target.value)} style={inputStyle} />
+          {resetMsg && <div style={{ color: "#E8748A", fontSize: 12, fontFamily: "sans-serif", textAlign: "center" }}>{resetMsg}</div>}
+          <button onClick={handleResetPin} style={{ width: "100%", background: "linear-gradient(135deg, #E8748A, #C94060)", border: "none", borderRadius: 4, padding: "12px 0", color: "#fff", fontSize: 13, fontFamily: "sans-serif", fontWeight: "bold", cursor: "pointer" }}>Envoyer un nouveau PIN</button>
+          <button onClick={() => { setResetMode(false); setResetMsg(""); }} style={{ background: "none", border: "none", color: "#E8748A", fontSize: 12, fontFamily: "sans-serif", cursor: "pointer" }}>← Retour à la connexion</button>
         </div>
       </div>
+    );
+  }
 
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 32, gap: 20, position: "relative", overflow: "hidden", background: "linear-gradient(135deg, #2d0015, #1a0030, #2d0015)", backgroundSize: "400% 400%", animation: "bgShift 8s ease infinite" }}>
+      <div style={{ position: "absolute", inset: 0, background: "radial-gradient(ellipse at 30% 60%, rgba(232,116,138,0.18) 0%, transparent 60%)", pointerEvents: "none" }} />
+      <div className="fade-up" style={{ textAlign: "center", position: "relative", zIndex: 1 }}>
+        <img src={LOGO_SRC} alt="Dating Romance" style={{ width: 110, height: "auto", display: "block", margin: "0 auto" }} />
+        <div style={{ marginTop: 8, color: "#fff", fontSize: 12, fontFamily: "sans-serif", opacity: 0.75, textAlign: "center", maxWidth: 240, margin: "8px auto 0", lineHeight: 1.5 }}>Speed Dating et Soirées Dansantes pour célibataires dans des lieux élégants.</div>
+        <div style={{ marginTop: 10, color: "rgba(255,255,255,0.45)", fontSize: 11, fontFamily: "sans-serif" }}>Identifiez-vous pour accéder à votre session</div>
+      </div>
       <div className="fade-up" style={{ animationDelay: "0.2s", width: "100%", position: "relative", zIndex: 1, display: "flex", flexDirection: "column", gap: 12 }}>
         <div>
           <div style={{ color: "rgba(255,255,255,0.7)", fontSize: 10, fontFamily: "sans-serif", letterSpacing: 2, textTransform: "uppercase", marginBottom: 6 }}>Prénom</div>
@@ -276,48 +265,124 @@ function LoginScreen({ onLogin, loginError, isLoading }) {
           <div style={{ color: "rgba(255,255,255,0.7)", fontSize: 10, fontFamily: "sans-serif", letterSpacing: 2, textTransform: "uppercase", marginBottom: 6 }}>Adresse email</div>
           <input type="email" placeholder="votre@email.com" value={email} onChange={e => setEmail(e.target.value)} style={inputStyle} />
         </div>
-
+        <div>
+          <div style={{ color: "rgba(255,255,255,0.7)", fontSize: 10, fontFamily: "sans-serif", letterSpacing: 2, textTransform: "uppercase", marginBottom: 6 }}>Code PIN</div>
+          <input type="password" placeholder="Votre code PIN à 4 chiffres" value={pin} onChange={e => setPin(e.target.value)} maxLength={4} style={inputStyle} />
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <button onClick={() => setResetMode(true)} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.4)", fontSize: 11, fontFamily: "sans-serif", cursor: "pointer", textDecoration: "underline" }}>PIN oublié ?</button>
+        </div>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
           <input type="checkbox" id="rgpd" checked={rgpd} onChange={e => setRgpd(e.target.checked)} style={{ marginTop: 2, accentColor: "#E8748A", cursor: "pointer", flexShrink: 0 }} />
-          <label htmlFor="rgpd" style={{ color: "rgba(255,255,255,0.45)", fontSize: 11, fontFamily: "sans-serif", lineHeight: 1.5, cursor: "pointer" }}>
-            J'accepte que mes données personnelles soient utilisées uniquement dans le cadre de cet événement Dating Romance, conformément au RGPD.
-          </label>
+          <label htmlFor="rgpd" style={{ color: "rgba(255,255,255,0.45)", fontSize: 11, fontFamily: "sans-serif", lineHeight: 1.5, cursor: "pointer" }}>J'accepte que mes données personnelles soient utilisées dans le cadre de Dating Romance, conformément au RGPD.</label>
         </div>
-
-        {displayError && (
-          <div style={{ color: "#E8748A", fontSize: 12, fontFamily: "sans-serif", textAlign: "center" }}>{displayError}</div>
-        )}
-
+        {displayError && <div style={{ color: "#E8748A", fontSize: 12, fontFamily: "sans-serif", textAlign: "center" }}>{displayError}</div>}
         <div style={{ display: "flex", justifyContent: "center", marginTop: 4 }}>
-          <button onClick={handleSubmit} className="btn-pulse" disabled={isLoading}
-            style={{ width: "75%", background: "linear-gradient(135deg, #E8748A, #C94060)", border: "none", borderRadius: 4, padding: "12px 0", color: "#fff", fontSize: 13, fontFamily: "sans-serif", fontWeight: "bold", cursor: isLoading ? "wait" : "pointer", opacity: isLoading ? 0.6 : 1 }}>
-            Accéder à ma session →
-          </button>
+          <button onClick={handleSubmit} className="btn-pulse" disabled={isLoading} style={{ width: "75%", background: "linear-gradient(135deg, #E8748A, #C94060)", border: "none", borderRadius: 4, padding: "12px 0", color: "#fff", fontSize: 13, fontFamily: "sans-serif", fontWeight: "bold", cursor: isLoading ? "wait" : "pointer", opacity: isLoading ? 0.6 : 1 }}>Accéder à ma session →</button>
+        </div>
+        <div style={{ textAlign: "center" }}>
+          <button onClick={onAdmin} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.15)", fontSize: 10, fontFamily: "sans-serif", cursor: "pointer" }}>Admin</button>
         </div>
       </div>
-
       <div style={{ position: "absolute", bottom: 14, left: 0, right: 0, textAlign: "center", zIndex: 2, pointerEvents: "none" }}>
-        <span style={{ color: "rgba(255,255,255,0.25)", fontSize: 10, fontFamily: "sans-serif", letterSpacing: 0.5 }}>
-          Dating Romance © 2026 — Tous droits réservés
-        </span>
+        <span style={{ color: "rgba(255,255,255,0.25)", fontSize: 10, fontFamily: "sans-serif" }}>Dating Romance © 2026</span>
       </div>
     </div>
   );
 }
 
-function SessionsScreen({ sessions, onSelect, onBack }) {
+function ProfileScreen({ user, onSave }) {
+  const [ville, setVille] = React.useState(user.ville || "");
+  const [phone, setPhone] = React.useState("");
+  const [facebook, setFacebook] = React.useState("");
+  const [instagram, setInstagram] = React.useState("");
+  const [noFb, setNoFb] = React.useState(false);
+  const [noIg, setNoIg] = React.useState(false);
+  const [choices, setChoices] = React.useState([]);
+  const [error, setError] = React.useState("");
+  const inputStyle = { width: "100%", background: "rgba(255,255,255,0.12)", border: "1px solid rgba(232,116,138,0.4)", borderRadius: 4, padding: "11px 14px", color: "#fff", fontSize: 13, fontFamily: "sans-serif", outline: "none", boxSizing: "border-box" };
+  const toggleChoice = (c) => setChoices(prev => prev.includes(c) ? prev.filter(x => x !== c) : [...prev, c]);
+
+  const handleSave = () => {
+    if (!ville.trim()) { setError("Veuillez indiquer votre ville."); return; }
+    if (!phone.trim()) { setError("Veuillez indiquer votre numéro de téléphone."); return; }
+    if (!noFb && !facebook.trim()) { setError("Veuillez indiquer votre Facebook ou cochez la case."); return; }
+    if (!noIg && !instagram.trim()) { setError("Veuillez indiquer votre Instagram ou cochez la case."); return; }
+    if (choices.length === 0) { setError("Choisissez au moins une info de contact à partager."); return; }
+    setError("");
+    onSave({ ville: ville.trim(), phone: phone.trim(), facebook: noFb ? "" : facebook.trim(), instagram: noIg ? "" : instagram.trim(), contactChoice: choices.join(",") });
+  };
+
+  const availableChoices = [];
+  availableChoices.push({ key: "phone", label: "📱 Téléphone" });
+  if (!noFb && facebook.trim()) availableChoices.push({ key: "facebook", label: "📘 Facebook" });
+  if (!noIg && instagram.trim()) availableChoices.push({ key: "instagram", label: "📷 Instagram" });
+
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", background: "#0D0D0F" }}>
+      <div style={{ padding: "20px 24px 12px" }}>
+        <div style={{ color: "#E8748A", fontSize: 10, letterSpacing: 5, textTransform: "uppercase", fontFamily: "sans-serif", marginBottom: 4 }}>Bienvenue {user.prenom}</div>
+        <div style={{ color: "#fff", fontSize: 18 }}>Complétez votre profil</div>
+        <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 12, fontFamily: "sans-serif", marginTop: 4 }}>Ces informations sont nécessaires avant d'accéder à votre session.</div>
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", padding: "8px 24px 24px", display: "flex", flexDirection: "column", gap: 14 }}>
+        <div>
+          <div style={{ color: "rgba(255,255,255,0.7)", fontSize: 10, fontFamily: "sans-serif", letterSpacing: 2, textTransform: "uppercase", marginBottom: 6 }}>Ville de résidence *</div>
+          <input type="text" placeholder="Ex: Mons" value={ville} onChange={e => setVille(e.target.value)} style={inputStyle} />
+        </div>
+        <div>
+          <div style={{ color: "rgba(255,255,255,0.7)", fontSize: 10, fontFamily: "sans-serif", letterSpacing: 2, textTransform: "uppercase", marginBottom: 6 }}>Numéro de téléphone *</div>
+          <input type="tel" placeholder="Ex: 0471 23 45 67" value={phone} onChange={e => setPhone(e.target.value)} style={inputStyle} />
+        </div>
+        <div>
+          <div style={{ color: "rgba(255,255,255,0.7)", fontSize: 10, fontFamily: "sans-serif", letterSpacing: 2, textTransform: "uppercase", marginBottom: 6 }}>Nom sur Facebook</div>
+          <input type="text" placeholder="Ex: Sophie Martin" value={facebook} onChange={e => setFacebook(e.target.value)} disabled={noFb} style={{ ...inputStyle, opacity: noFb ? 0.4 : 1 }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+            <input type="checkbox" checked={noFb} onChange={e => { setNoFb(e.target.checked); if (e.target.checked) setChoices(prev => prev.filter(c => c !== "facebook")); }} style={{ accentColor: "#E8748A" }} />
+            <span style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, fontFamily: "sans-serif" }}>Je n'ai pas de Facebook</span>
+          </div>
+        </div>
+        <div>
+          <div style={{ color: "rgba(255,255,255,0.7)", fontSize: 10, fontFamily: "sans-serif", letterSpacing: 2, textTransform: "uppercase", marginBottom: 6 }}>Nom sur Instagram</div>
+          <input type="text" placeholder="Ex: @sophie.martin" value={instagram} onChange={e => setInstagram(e.target.value)} disabled={noIg} style={{ ...inputStyle, opacity: noIg ? 0.4 : 1 }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+            <input type="checkbox" checked={noIg} onChange={e => { setNoIg(e.target.checked); if (e.target.checked) setChoices(prev => prev.filter(c => c !== "instagram")); }} style={{ accentColor: "#E8748A" }} />
+            <span style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, fontFamily: "sans-serif" }}>Je n'ai pas d'Instagram</span>
+          </div>
+        </div>
+        <div>
+          <div style={{ color: "#E8748A", fontSize: 10, fontFamily: "sans-serif", letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 }}>Que souhaitez-vous partager en cas de match ? *</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {availableChoices.map(c => (
+              <div key={c.key} onClick={() => toggleChoice(c.key)} style={{ background: choices.includes(c.key) ? "rgba(232,116,138,0.15)" : "rgba(255,255,255,0.04)", border: choices.includes(c.key) ? "1px solid rgba(232,116,138,0.5)" : "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "10px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ width: 20, height: 20, borderRadius: 4, border: choices.includes(c.key) ? "none" : "1px solid rgba(255,255,255,0.3)", background: choices.includes(c.key) ? "#E8748A" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 12 }}>{choices.includes(c.key) ? "✓" : ""}</div>
+                <span style={{ color: "#fff", fontSize: 13, fontFamily: "sans-serif" }}>{c.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        {error && <div style={{ color: "#E8748A", fontSize: 12, fontFamily: "sans-serif", textAlign: "center" }}>{error}</div>}
+      </div>
+      <div style={{ padding: "10px 16px", borderTop: "1px solid rgba(255,255,255,0.06)", flexShrink: 0, display: "flex", justifyContent: "center" }}>
+        <button onClick={handleSave} className="btn-pulse" style={{ width: "75%", background: "linear-gradient(135deg, #E8748A, #C94060)", border: "none", borderRadius: 4, padding: "12px 0", color: "#fff", fontSize: 13, fontFamily: "sans-serif", fontWeight: "bold", cursor: "pointer" }}>Valider mon profil →</button>
+      </div>
+    </div>
+  );
+}
+
+function SessionsScreen({ sessions, onSelect, user, onBack }) {
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
       <ProgressBar step={1} />
       <div style={{ padding: "12px 24px 16px" }}>
         <button onClick={onBack} style={{ background: "none", border: "none", color: "#E8748A", fontSize: 13, fontFamily: "sans-serif", cursor: "pointer", padding: 0, marginBottom: 8, display: "block" }}>← Retour</button>
-        <div style={{ color: "#E8748A", fontSize: 10, letterSpacing: 5, textTransform: "uppercase", fontFamily: "sans-serif", marginBottom: 4 }}>Vos sessions</div>
-        <div style={{ color: "#fff", fontSize: 20, whiteSpace: "nowrap" }}>Sélectionnez une session</div>
+        <div style={{ color: "#E8748A", fontSize: 10, letterSpacing: 5, textTransform: "uppercase", fontFamily: "sans-serif", marginBottom: 4 }}>Bonjour {user.prenom}</div>
+        <div style={{ color: "#fff", fontSize: 20 }}>Vos sessions</div>
       </div>
       <div style={{ flex: 1, overflowY: "auto", padding: "0 24px 24px", display: "flex", flexDirection: "column", gap: 12 }}>
         {sessions.map((s, i) => (
           <div key={s.id} className="fade-up" onClick={() => onSelect(s)}
-            style={{ animationDelay: `${i * 0.1}s`, background: s.submitted ? "rgba(100,200,100,0.06)" : "rgba(255,255,255,0.04)", border: s.submitted ? "1px solid rgba(100,200,100,0.3)" : "1px solid rgba(232,116,138,0.15)", borderRadius: 20, padding: "18px 20px", cursor: "pointer", transition: "all 0.2s" }}>
+            style={{ animationDelay: `${i * 0.1}s`, background: s.submitted ? "rgba(100,200,100,0.06)" : "rgba(255,255,255,0.04)", border: s.submitted ? "1px solid rgba(100,200,100,0.3)" : "1px solid rgba(232,116,138,0.15)", borderRadius: 20, padding: "18px 20px", cursor: "pointer" }}>
             <div style={{ display: "flex", justifyContent: "space-between" }}>
               <div>
                 <div style={{ color: "#E8748A", fontSize: 11, fontFamily: "sans-serif", letterSpacing: 1, marginBottom: 4 }}>{s.date}</div>
@@ -326,12 +391,9 @@ function SessionsScreen({ sessions, onSelect, onBack }) {
               </div>
               <div style={{ textAlign: "right" }}>
                 {s.submitted ? (
-                  <div style={{ color: "rgba(100,200,100,0.8)", fontSize: 12, fontFamily: "sans-serif", fontWeight: "bold" }}>✓ Déjà voté</div>
+                  <div style={{ color: "rgba(100,200,100,0.8)", fontSize: 12, fontFamily: "sans-serif", fontWeight: "bold" }}>✓ Déjà voté<br/><span style={{ fontSize: 10, fontWeight: "normal" }}>Voir résultats</span></div>
                 ) : (
-                  <>
-                    <div style={{ color: "#fff", fontSize: 22 }}>{s.spots}</div>
-                    <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, fontFamily: "sans-serif" }}>participants</div>
-                  </>
+                  <><div style={{ color: "#fff", fontSize: 22 }}>{s.spots}</div><div style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, fontFamily: "sans-serif" }}>participants</div></>
                 )}
               </div>
             </div>
@@ -356,41 +418,29 @@ function ParticipantsScreen({ session, participants, likes, likeAnim, onLike, on
         </div>
         <div style={{ display: "flex", gap: 8, marginBottom: 6, marginTop: 4 }}>
           <div style={{ flex: 1, background: "rgba(232,116,138,0.12)", border: "1px solid rgba(232,116,138,0.4)", borderRadius: 6, padding: "5px 10px", display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontSize: 15 }}>❤️</span>
-            <span style={{ color: "#fff", fontSize: 11, fontFamily: "sans-serif", fontWeight: "bold" }}>Plus que de l'amitié</span>
+            <span style={{ fontSize: 15 }}>❤️</span><span style={{ color: "#fff", fontSize: 11, fontFamily: "sans-serif", fontWeight: "bold" }}>Plus que de l'amitié</span>
           </div>
           <div style={{ flex: 1, background: "rgba(100,200,100,0.1)", border: "1px solid rgba(100,200,100,0.35)", borderRadius: 6, padding: "5px 10px", display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontSize: 15 }}>💚</span>
-            <span style={{ color: "#fff", fontSize: 11, fontFamily: "sans-serif", fontWeight: "bold" }}>Amitié</span>
+            <span style={{ fontSize: 15 }}>💚</span><span style={{ color: "#fff", fontSize: 11, fontFamily: "sans-serif", fontWeight: "bold" }}>Amitié</span>
           </div>
         </div>
-        <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 11, fontFamily: "sans-serif" }}>{likedCount} like{likedCount > 1 ? "s" : ""} envoyé{likedCount > 1 ? "s" : ""}</div>
+        <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 11, fontFamily: "sans-serif" }}>{likedCount} like{likedCount > 1 ? "s" : ""}</div>
       </div>
-      <div style={{ flex: 1, overflowY: "auto", padding: "8px 16px", display: "grid", gridTemplateColumns: "1fr 1fr", gridAutoRows: "120px", gap: 8, alignContent: "start" }}>
+      <div style={{ flex: 1, overflowY: "auto", padding: "8px 16px", display: "grid", gridTemplateColumns: "1fr 1fr", gridAutoRows: "130px", gap: 8, alignContent: "start" }}>
         {participants.map((p, i) => {
-          const isCancelled = p.statut === "annulation";
+          const isCancelled = p.statut === "annulation" || p.statut === "Annulation";
           return (
-          <div key={p.id} className="fade-up" style={{ animationDelay: `${i * 0.08}s`, background: isCancelled ? "rgba(255,60,60,0.04)" : "rgba(255,255,255,0.04)", border: `1px solid ${isCancelled ? "rgba(255,60,60,0.2)" : likes[p.id] === "love" ? "rgba(232,116,138,0.6)" : likes[p.id] === "friend" ? "rgba(100,200,100,0.5)" : "rgba(255,255,255,0.07)"}`, borderRadius: 10, overflow: "hidden", transition: "all 0.2s", display: "flex", flexDirection: "column", height: "120px", opacity: isCancelled ? 0.5 : 1 }}>
+          <div key={p.id} className="fade-up" style={{ animationDelay: `${i * 0.08}s`, background: isCancelled ? "rgba(255,60,60,0.04)" : "rgba(255,255,255,0.04)", border: `1px solid ${isCancelled ? "rgba(255,60,60,0.2)" : likes[p.id] === "love" ? "rgba(232,116,138,0.6)" : likes[p.id] === "friend" ? "rgba(100,200,100,0.5)" : "rgba(255,255,255,0.07)"}`, borderRadius: 10, overflow: "hidden", display: "flex", flexDirection: "column", height: "130px", opacity: isCancelled ? 0.5 : 1 }}>
             <div style={{ padding: "7px 10px 4px", flex: 1 }}>
               <div style={{ color: "#fff", fontSize: 12, fontWeight: "500", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.prenom} {p.nom ? p.nom.substring(0,2)+"." : ""}</div>
               {p.age && <div style={{ color: "rgba(255,255,255,0.45)", fontSize: 10, fontFamily: "sans-serif", marginTop: 1 }}>{p.age} ans</div>}
-              {p.ville && <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10, fontFamily: "sans-serif", marginTop: 1 }}>{p.ville}</div>}
-              <div style={{ color: isCancelled ? "rgba(255,80,80,0.8)" : "rgba(100,200,100,0.7)", fontSize: 9, fontFamily: "sans-serif", marginTop: 2, fontWeight: "bold", textTransform: "uppercase", letterSpacing: 1 }}>
-                {p.statut || "participation"}
-              </div>
+              <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10, fontFamily: "sans-serif", marginTop: 1 }}>{p.ville || "Pas complétée"}</div>
+              <div style={{ color: isCancelled ? "rgba(255,80,80,0.8)" : "rgba(100,200,100,0.7)", fontSize: 9, fontFamily: "sans-serif", marginTop: 2, fontWeight: "bold", textTransform: "uppercase", letterSpacing: 1 }}>{p.statut || "participation"}</div>
             </div>
             {!isCancelled && (
             <div style={{ display: "flex", borderTop: "1px solid rgba(255,255,255,0.06)", flexShrink: 0 }}>
-              <button
-                onClick={() => onLike(p, "love")}
-                className={likeAnim === p.id && likes[p.id] === "love" ? "heart-pop" : ""}
-                style={{ flex: 1, background: likes[p.id] === "love" ? "rgba(232,116,138,0.3)" : "transparent", border: "none", borderRight: "1px solid rgba(255,255,255,0.06)", padding: "5px 0", cursor: "pointer", fontSize: 14, opacity: likes[p.id] === "friend" ? 0.35 : 1 }}
-              >❤️</button>
-              <button
-                onClick={() => onLike(p, "friend")}
-                className={likeAnim === p.id && likes[p.id] === "friend" ? "heart-pop" : ""}
-                style={{ flex: 1, background: likes[p.id] === "friend" ? "rgba(100,200,100,0.25)" : "transparent", border: "none", padding: "5px 0", cursor: "pointer", fontSize: 14, opacity: likes[p.id] === "love" ? 0.35 : 1 }}
-              >💚</button>
+              <button onClick={() => onLike(p, "love")} className={likeAnim === p.id && likes[p.id] === "love" ? "heart-pop" : ""} style={{ flex: 1, background: likes[p.id] === "love" ? "rgba(232,116,138,0.3)" : "transparent", border: "none", borderRight: "1px solid rgba(255,255,255,0.06)", padding: "5px 0", cursor: "pointer", fontSize: 14, opacity: likes[p.id] === "friend" ? 0.35 : 1 }}>❤️</button>
+              <button onClick={() => onLike(p, "friend")} className={likeAnim === p.id && likes[p.id] === "friend" ? "heart-pop" : ""} style={{ flex: 1, background: likes[p.id] === "friend" ? "rgba(100,200,100,0.25)" : "transparent", border: "none", padding: "5px 0", cursor: "pointer", fontSize: 14, opacity: likes[p.id] === "love" ? 0.35 : 1 }}>💚</button>
             </div>
             )}
           </div>
@@ -398,33 +448,24 @@ function ParticipantsScreen({ session, participants, likes, likeAnim, onLike, on
         })}
       </div>
       <div style={{ padding: "10px 16px", borderTop: "1px solid rgba(255,255,255,0.06)", flexShrink: 0, display: "flex", justifyContent: "center" }}>
-        <button
-          onClick={onValidate}
-          disabled={Object.keys(likes).length === 0}
-          className={Object.keys(likes).length > 0 ? "btn-pulse" : ""}
-          style={{ width: "75%", background: Object.keys(likes).length === 0 ? "rgba(255,255,255,0.06)" : "linear-gradient(135deg, #E8748A, #C94060)", border: "none", borderRadius: 4, padding: "11px 0", color: Object.keys(likes).length === 0 ? "rgba(255,255,255,0.3)" : "#fff", fontSize: 13, fontFamily: "sans-serif", fontWeight: "bold", cursor: Object.keys(likes).length === 0 ? "default" : "pointer", transition: "all 0.3s" }}
-        >
-          Valider mes choix ({Object.keys(likes).length} like{Object.keys(likes).length > 1 ? "s" : ""}) →
-        </button>
+        <button onClick={onValidate} disabled={likedCount === 0} className={likedCount > 0 ? "btn-pulse" : ""} style={{ width: "75%", background: likedCount === 0 ? "rgba(255,255,255,0.06)" : "linear-gradient(135deg, #E8748A, #C94060)", border: "none", borderRadius: 4, padding: "11px 0", color: likedCount === 0 ? "rgba(255,255,255,0.3)" : "#fff", fontSize: 13, fontFamily: "sans-serif", fontWeight: "bold", cursor: likedCount === 0 ? "default" : "pointer" }}>Valider ({likedCount} like{likedCount > 1 ? "s" : ""}) →</button>
       </div>
     </div>
   );
 }
 
 function MatchCard({ p }) {
-  const [showContact, setShowContact] = React.useState(false);
+  const [open, setOpen] = React.useState(false);
   return (
-    <div
-      onClick={() => setShowContact(!showContact)}
-      style={{ background: "rgba(232,116,138,0.06)", border: "1px solid rgba(232,116,138,0.25)", borderRadius: 10, padding: "10px 14px", marginBottom: 8, cursor: "pointer" }}
-    >
+    <div onClick={() => setOpen(!open)} style={{ background: "rgba(232,116,138,0.06)", border: "1px solid rgba(232,116,138,0.25)", borderRadius: 10, padding: "10px 14px", marginBottom: 8, cursor: "pointer" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div>
           <div style={{ color: "#fff", fontSize: 13, fontWeight: "bold" }}>{p.prenom} {p.nom ? p.nom.substring(0,2)+"." : ""}</div>
+          <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, fontFamily: "sans-serif" }}>{p.age ? p.age + " ans" : ""}{p.age ? " · " : ""}{p.ville || "Pas complétée"}</div>
         </div>
         <div style={{ fontSize: 20 }}>💘</div>
       </div>
-      {showContact && (
+      {open && (
         <div style={{ background: "rgba(232,116,138,0.1)", borderRadius: 8, padding: "8px 12px", marginTop: 8 }}>
           <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 10, fontFamily: "sans-serif", letterSpacing: 2, textTransform: "uppercase", marginBottom: 4 }}>Coordonnées</div>
           <div style={{ color: "#fff", fontSize: 13, fontFamily: "sans-serif" }}>{p.prenom} {p.nom}</div>
@@ -436,93 +477,66 @@ function MatchCard({ p }) {
   );
 }
 
-function ResultsScreen({ resultsData, pendingResponses, onRespond, onFinish }) {
+function ResultsScreen({ resultsData, pendingResponses, onRespond, onFinish, onRefresh }) {
   const { matches, pending, waiting } = resultsData;
   const waitingList = waiting || [];
-  const unanswered = pending ? pending.filter(p => !pendingResponses[p.id]) : [];
-  const answered = pending ? pending.filter(p => pendingResponses[p.id]) : [];
+  const unanswered = pending ? pending.filter(p => !pendingResponses[p.email]) : [];
+  const answered = pending ? pending.filter(p => pendingResponses[p.email]) : [];
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", background: "#0D0D0F" }}>
       <ProgressBar step={3} />
-      <div style={{ padding: "8px 24px 12px", borderBottom: "1px solid rgba(255,255,255,0.06)", flexShrink: 0 }}>
+      <div style={{ padding: "8px 24px 12px", borderBottom: "1px solid rgba(255,255,255,0.06)", flexShrink: 0, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ color: "#fff", fontSize: 18 }}>Vos résultats</div>
+        <button onClick={onRefresh} style={{ background: "rgba(232,116,138,0.15)", border: "1px solid rgba(232,116,138,0.3)", borderRadius: 6, padding: "6px 12px", color: "#E8748A", fontSize: 11, fontFamily: "sans-serif", cursor: "pointer" }}>🔄 Actualiser</button>
       </div>
-
       <div style={{ flex: 1, overflowY: "auto", padding: "16px 20px", display: "flex", flexDirection: "column", gap: 20 }}>
-
-        {/* MATCHES */}
         <div>
-          <div style={{ color: "#E8748A", fontSize: 10, letterSpacing: 4, textTransform: "uppercase", fontFamily: "sans-serif", marginBottom: 10 }}>
-            💘 Matchs ({matches.length})
-          </div>
+          <div style={{ color: "#E8748A", fontSize: 10, letterSpacing: 4, textTransform: "uppercase", fontFamily: "sans-serif", marginBottom: 10 }}>💘 Matchs ({matches.length})</div>
           {matches.length === 0 ? (
-            <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 13, fontFamily: "sans-serif", fontStyle: "italic" }}>Aucun match pour cette session.</div>
+            <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 13, fontFamily: "sans-serif", fontStyle: "italic" }}>Aucun match pour le moment.</div>
           ) : (
             <>
               <div style={{ background: "rgba(232,116,138,0.08)", border: "1px solid rgba(232,116,138,0.2)", borderRadius: 10, padding: "10px 14px", marginBottom: 10 }}>
-                <p style={{ color: "rgba(255,255,255,0.7)", fontSize: 12, fontFamily: "sans-serif", lineHeight: 1.6, margin: 0 }}>
-                  Cliquez sur un match pour voir ses coordonnées.
-                </p>
+                <p style={{ color: "rgba(255,255,255,0.7)", fontSize: 12, fontFamily: "sans-serif", lineHeight: 1.6, margin: 0 }}>Cliquez sur un match pour voir ses coordonnées.</p>
               </div>
-              {matches.map(p => (
-                <MatchCard key={p.id || p.email} p={p} />
-              ))}
+              {matches.map((p,i) => <MatchCard key={p.email || i} p={p} />)}
             </>
           )}
         </div>
 
-        {/* PENDING LIKES RECEIVED */}
         {unanswered.length > 0 && (
           <div>
-            <div style={{ color: "rgba(255,255,255,0.6)", fontSize: 10, letterSpacing: 4, textTransform: "uppercase", fontFamily: "sans-serif", marginBottom: 10 }}>
-              💌 Quelqu'un vous a liké ({unanswered.length})
-            </div>
-            {unanswered.map(p => (
-              <div key={p.id || p.email} style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "10px 14px", marginBottom: 8 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                  <div>
-                    <div style={{ color: "#fff", fontSize: 13, fontWeight: "bold" }}>{p.prenom} {p.nom ? p.nom.substring(0,2)+"." : ""}</div>
-                    <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, fontFamily: "sans-serif", marginTop: 2 }}>
-                      {p.theirType === "love" ? "❤️ Plus que de l'amitié" : "💚 Amitié"}
-                    </div>
-                  </div>
+            <div style={{ color: "rgba(255,255,255,0.6)", fontSize: 10, letterSpacing: 4, textTransform: "uppercase", fontFamily: "sans-serif", marginBottom: 10 }}>💌 Likes reçus ({unanswered.length})</div>
+            {unanswered.map((p,i) => (
+              <div key={p.email || i} style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "10px 14px", marginBottom: 8 }}>
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ color: "#fff", fontSize: 13, fontWeight: "bold" }}>{p.prenom} {p.nom ? p.nom.substring(0,2)+"." : ""}</div>
+                  <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 11, fontFamily: "sans-serif" }}>{p.age ? p.age + " ans" : ""}{p.age ? " · " : ""}{p.ville || "Pas complétée"}</div>
+                  <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, fontFamily: "sans-serif", marginTop: 2 }}>{p.theirType === "love" ? "❤️ Plus que de l'amitié" : "💚 Amitié"}</div>
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={() => onRespond(p.id, "accepted")}
-                    style={{ flex: 1, background: "linear-gradient(135deg, #E8748A, #C94060)", border: "none", borderRadius: 4, padding: "8px 0", color: "#fff", fontSize: 12, fontFamily: "sans-serif", fontWeight: "bold", cursor: "pointer" }}>
-                    ✓ Accepter
-                  </button>
-                  <button onClick={() => onRespond(p.id, "refused")}
-                    style={{ flex: 1, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 4, padding: "8px 0", color: "rgba(255,255,255,0.5)", fontSize: 12, fontFamily: "sans-serif", cursor: "pointer" }}>
-                    ✕ Refuser
-                  </button>
+                  <button onClick={() => onRespond(p, "accepted")} style={{ flex: 1, background: "linear-gradient(135deg, #E8748A, #C94060)", border: "none", borderRadius: 4, padding: "8px 0", color: "#fff", fontSize: 12, fontFamily: "sans-serif", fontWeight: "bold", cursor: "pointer" }}>✓ Accepter</button>
+                  <button onClick={() => onRespond(p, "refused")} style={{ flex: 1, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 4, padding: "8px 0", color: "rgba(255,255,255,0.5)", fontSize: 12, fontFamily: "sans-serif", cursor: "pointer" }}>✕ Refuser</button>
                 </div>
               </div>
             ))}
-            <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "10px 14px", marginBottom: 12 }}>
-              <p style={{ color: "rgba(255,255,255,0.5)", fontSize: 11, fontFamily: "sans-serif", lineHeight: 1.6, margin: 0 }}>
-                ℹ️ Si vous acceptez un like reçu, les coordonnées de cette personne vous seront affichées.
-              </p>
-            </div>
           </div>
         )}
 
-        {/* ANSWERED */}
         {answered.length > 0 && (
           <div>
             <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 10, letterSpacing: 4, textTransform: "uppercase", fontFamily: "sans-serif", marginBottom: 10 }}>Réponses données</div>
-            {answered.map(p => (
-              <div key={p.id || p.email} style={{ marginBottom: 8 }}>
-                <div style={{ background: "rgba(255,255,255,0.02)", border: `1px solid ${pendingResponses[p.id] === "accepted" ? "rgba(232,116,138,0.2)" : "rgba(255,255,255,0.05)"}`, borderRadius: 10, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            {answered.map((p,i) => (
+              <div key={p.email || i} style={{ marginBottom: 8 }}>
+                <div style={{ background: "rgba(255,255,255,0.02)", border: `1px solid ${pendingResponses[p.email] === "accepted" ? "rgba(232,116,138,0.2)" : "rgba(255,255,255,0.05)"}`, borderRadius: 10, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div>
                     <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 13 }}>{p.prenom} {p.nom ? p.nom.substring(0,2)+"." : ""}</div>
+                    <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 11, fontFamily: "sans-serif" }}>{p.age ? p.age + " ans" : ""}{p.age ? " · " : ""}{p.ville || "Pas complétée"}</div>
                   </div>
-                  <div style={{ fontSize: 13, fontFamily: "sans-serif", color: pendingResponses[p.id] === "accepted" ? "#E8748A" : "rgba(255,255,255,0.3)" }}>
-                    {pendingResponses[p.id] === "accepted" ? "✓ Accepté" : "✕ Refusé"}
-                  </div>
+                  <div style={{ fontSize: 13, fontFamily: "sans-serif", color: pendingResponses[p.email] === "accepted" ? "#E8748A" : "rgba(255,255,255,0.3)" }}>{pendingResponses[p.email] === "accepted" ? "✓ Accepté" : "✕ Refusé"}</div>
                 </div>
-                {pendingResponses[p.id] === "accepted" && (
+                {pendingResponses[p.email] === "accepted" && (
                   <div style={{ background: "rgba(232,116,138,0.08)", border: "1px solid rgba(232,116,138,0.2)", borderRadius: 8, padding: "8px 12px", marginTop: 6 }}>
                     <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 10, fontFamily: "sans-serif", letterSpacing: 2, textTransform: "uppercase", marginBottom: 4 }}>Coordonnées</div>
                     <div style={{ color: "#fff", fontSize: 13, fontFamily: "sans-serif" }}>{p.prenom} {p.nom}</div>
@@ -535,34 +549,23 @@ function ResultsScreen({ resultsData, pendingResponses, onRespond, onFinish }) {
           </div>
         )}
 
-        {/* WAITING - likes sent, no response yet */}
         {waitingList.length > 0 && (
           <div>
-            <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 10, letterSpacing: 4, textTransform: "uppercase", fontFamily: "sans-serif", marginBottom: 10 }}>
-              ⏳ En attente de réponse ({waitingList.length})
-            </div>
-            {waitingList.map(p => (
-              <div key={p.id || p.email} style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 10, padding: "10px 14px", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 10, letterSpacing: 4, textTransform: "uppercase", fontFamily: "sans-serif", marginBottom: 10 }}>⏳ En attente ({waitingList.length})</div>
+            {waitingList.map((p,i) => (
+              <div key={p.email || i} style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 10, padding: "10px 14px", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
                   <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 13 }}>{p.prenom} {p.nom ? p.nom.substring(0,2)+"." : ""}</div>
-                  <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 11, fontFamily: "sans-serif", marginTop: 2 }}>
-                    {p.myType === "love" ? "❤️" : "💚"} Vous avez liké
-                  </div>
+                  <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 11, fontFamily: "sans-serif", marginTop: 2 }}>{p.myType === "love" ? "❤️" : "💚"} Vous avez liké</div>
                 </div>
-                <div style={{ fontSize: 11, fontFamily: "sans-serif", color: p.status === "waiting" ? "rgba(255,200,50,0.7)" : "rgba(255,255,255,0.25)" }}>
-                  {p.status === "waiting" ? "⏳ Pas encore voté" : "✕ Pas de match"}
-                </div>
+                <div style={{ fontSize: 11, fontFamily: "sans-serif", color: p.status === "waiting" ? "rgba(255,200,50,0.7)" : "rgba(255,255,255,0.25)" }}>{p.status === "waiting" ? "⏳ Pas encore voté" : "✕ Pas de match"}</div>
               </div>
             ))}
           </div>
         )}
       </div>
-
       <div style={{ padding: "10px 16px", borderTop: "1px solid rgba(255,255,255,0.06)", flexShrink: 0, display: "flex", justifyContent: "center" }}>
-        <button onClick={onFinish} className="btn-pulse"
-          style={{ width: "75%", background: "linear-gradient(135deg, #E8748A, #C94060)", border: "none", borderRadius: 4, padding: "11px 0", color: "#fff", fontSize: 13, fontFamily: "sans-serif", fontWeight: "bold", cursor: "pointer" }}>
-          Terminer la session →
-        </button>
+        <button onClick={onFinish} className="btn-pulse" style={{ width: "75%", background: "linear-gradient(135deg, #E8748A, #C94060)", border: "none", borderRadius: 4, padding: "11px 0", color: "#fff", fontSize: 13, fontFamily: "sans-serif", fontWeight: "bold", cursor: "pointer" }}>Terminer →</button>
       </div>
     </div>
   );
@@ -570,50 +573,309 @@ function ResultsScreen({ resultsData, pendingResponses, onRespond, onFinish }) {
 
 function ThankYouScreen() {
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 32, gap: 24, position: "relative", overflow: "hidden",
-      background: "linear-gradient(135deg, #2d0015, #1a0030, #2d0015)", backgroundSize: "400% 400%", animation: "bgShift 8s ease infinite" }}>
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 32, gap: 24, position: "relative", overflow: "hidden", background: "linear-gradient(135deg, #2d0015, #1a0030, #2d0015)", backgroundSize: "400% 400%", animation: "bgShift 8s ease infinite" }}>
       <div style={{ position: "absolute", inset: 0, background: "radial-gradient(ellipse at 40% 60%, rgba(232,116,138,0.15) 0%, transparent 65%)", pointerEvents: "none" }} />
-
       <div className="fade-up" style={{ textAlign: "center", position: "relative", zIndex: 1 }}>
         <img src={LOGO_SRC} alt="Dating Romance" style={{ width: 110, height: "auto", display: "block", margin: "0 auto" }} />
       </div>
-
       <div className="fade-up match-reveal" style={{ textAlign: "center", position: "relative", zIndex: 1, animationDelay: "0.2s" }}>
         <div style={{ fontSize: 36, marginBottom: 12 }}>💖</div>
-        <div style={{ color: "#fff", fontSize: 20, marginBottom: 8, whiteSpace: "nowrap" }}>Merci d'avoir participé !</div>
+        <div style={{ color: "#fff", fontSize: 20, marginBottom: 8 }}>Merci d'avoir participé !</div>
         <div style={{ color: "rgba(255,255,255,0.6)", fontSize: 13, fontFamily: "sans-serif", lineHeight: 1.7, maxWidth: 300, margin: "0 auto", textAlign: "center" }}>
-          Nous espérons que cette session de Speed Dating vous a apporté de belles rencontres.
-          <br /><br />
-          Si ce n'est pas le cas, n'hésitez pas à nous suivre sur les réseaux sociaux pour ne pas manquer nos prochains événements. Votre âme sœur vous attend quelque part, ce n'est qu'une question de temps avec Dating Romance 😉
+          Nous espérons que cette session vous a apporté de belles rencontres.<br /><br />Suivez-nous sur les réseaux sociaux pour nos prochains événements 😉
         </div>
       </div>
-
       <div className="fade-up" style={{ animationDelay: "0.4s", width: "100%", position: "relative", zIndex: 1, display: "flex", flexDirection: "column", gap: 12 }}>
         <a href="https://www.facebook.com/share/18URrAcioV/" target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
-          <div style={{ background: "rgba(24,119,242,0.15)", border: "1px solid rgba(24,119,242,0.35)", borderRadius: 4, padding: "13px 20px", display: "flex", alignItems: "center", gap: 14, cursor: "pointer" }}>
-            <img src={LOGO_SRC} alt="Dating Romance" style={{ width: 36, height: 36, objectFit: "contain" }} />
-            <div>
-              <div style={{ color: "#fff", fontSize: 13, fontWeight: "bold", fontFamily: "sans-serif" }}>Facebook</div>
-              <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, fontFamily: "sans-serif", marginTop: 1 }}>Dating Romance</div>
-            </div>
+          <div style={{ background: "rgba(24,119,242,0.15)", border: "1px solid rgba(24,119,242,0.35)", borderRadius: 4, padding: "13px 20px", display: "flex", alignItems: "center", gap: 14 }}>
+            <img src={LOGO_SRC} alt="" style={{ width: 36, height: 36, objectFit: "contain" }} />
+            <div><div style={{ color: "#fff", fontSize: 13, fontWeight: "bold", fontFamily: "sans-serif" }}>Facebook</div><div style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, fontFamily: "sans-serif" }}>Dating Romance</div></div>
           </div>
         </a>
-
         <a href="https://www.instagram.com/datingromance.be?igsh=MXZ6ejJxYnk3N3U0MA==" target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
-          <div style={{ background: "rgba(225,48,108,0.12)", border: "1px solid rgba(225,48,108,0.3)", borderRadius: 4, padding: "13px 20px", display: "flex", alignItems: "center", gap: 14, cursor: "pointer" }}>
-            <img src={LOGO_SRC} alt="Dating Romance" style={{ width: 36, height: 36, objectFit: "contain" }} />
-            <div>
-              <div style={{ color: "#fff", fontSize: 13, fontWeight: "bold", fontFamily: "sans-serif" }}>Instagram</div>
-              <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, fontFamily: "sans-serif", marginTop: 1 }}>@datingromance.be</div>
-            </div>
+          <div style={{ background: "rgba(225,48,108,0.12)", border: "1px solid rgba(225,48,108,0.3)", borderRadius: 4, padding: "13px 20px", display: "flex", alignItems: "center", gap: 14 }}>
+            <img src={LOGO_SRC} alt="" style={{ width: 36, height: 36, objectFit: "contain" }} />
+            <div><div style={{ color: "#fff", fontSize: 13, fontWeight: "bold", fontFamily: "sans-serif" }}>Instagram</div><div style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, fontFamily: "sans-serif" }}>@datingromance.be</div></div>
           </div>
         </a>
       </div>
+      <div style={{ color: "rgba(255,255,255,0.25)", fontSize: 10, fontFamily: "sans-serif", textAlign: "center" }}>Dating Romance © 2026</div>
+    </div>
+  );
+}
 
-      <div className="fade-up" style={{ animationDelay: "0.6s", position: "relative", zIndex: 1 }}>
-        <div style={{ color: "rgba(255,255,255,0.25)", fontSize: 10, fontFamily: "sans-serif", textAlign: "center", letterSpacing: 0.5 }}>
-          Dating Romance © 2026 — Tous droits réservés
+// ============ ADMIN PANEL ============
+
+function AdminPanel({ apiCall, onLogout }) {
+  const [loggedIn, setLoggedIn] = React.useState(false);
+  const [email, setEmail] = React.useState("");
+  const [password, setPassword] = React.useState("");
+  const [error, setError] = React.useState("");
+  const [screen, setScreen] = React.useState("sessions");
+  const [sessions, setSessions] = React.useState([]);
+  const [selectedSession, setSelectedSession] = React.useState(null);
+  const [participants, setParticipants] = React.useState([]);
+  const [matches, setMatches] = React.useState([]);
+  const [loading, setLoading] = React.useState(false);
+  const [showAdd, setShowAdd] = React.useState(false);
+  const [showAddSession, setShowAddSession] = React.useState(false);
+  const [editSession, setEditSession] = React.useState(null);
+  const [editPart, setEditPart] = React.useState(null);
+
+  const inputStyle = { width: "100%", background: "rgba(255,255,255,0.12)", border: "1px solid rgba(232,116,138,0.4)", borderRadius: 4, padding: "9px 12px", color: "#fff", fontSize: 12, fontFamily: "sans-serif", outline: "none", boxSizing: "border-box" };
+
+  const handleLogin = () => {
+    apiCall({ action: "adminLogin", email, password }).then(d => {
+      if (d.success) { setLoggedIn(true); loadSessions(); }
+      else setError("Identifiants incorrects.");
+    });
+  };
+
+  const loadSessions = () => {
+    setLoading(true);
+    apiCall({ action: "adminGetSessions" }).then(d => { setSessions(d); setLoading(false); });
+  };
+
+  const loadParticipants = (sid) => {
+    setLoading(true);
+    apiCall({ action: "adminGetParticipants", sessionId: sid }).then(d => { setParticipants(d); setLoading(false); });
+  };
+
+  const loadMatches = (sid) => {
+    setLoading(true);
+    apiCall({ action: "adminGetMatches", sessionId: sid }).then(d => { setMatches(d); setLoading(false); });
+  };
+
+  if (!loggedIn) {
+    return (
+      <div style={{ minHeight: "100vh", background: "#0D0D0F", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ width: 360, padding: 32, display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ color: "#E8748A", fontSize: 18, fontFamily: "sans-serif", textAlign: "center", marginBottom: 8 }}>🔐 Admin Dating Romance</div>
+          <input type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} style={inputStyle} />
+          <input type="password" placeholder="Mot de passe" value={password} onChange={e => setPassword(e.target.value)} style={inputStyle} />
+          {error && <div style={{ color: "#E8748A", fontSize: 12, fontFamily: "sans-serif", textAlign: "center" }}>{error}</div>}
+          <button onClick={handleLogin} style={{ background: "linear-gradient(135deg, #E8748A, #C94060)", border: "none", borderRadius: 4, padding: "11px 0", color: "#fff", fontSize: 13, fontFamily: "sans-serif", fontWeight: "bold", cursor: "pointer" }}>Connexion</button>
+          <button onClick={onLogout} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.3)", fontSize: 11, fontFamily: "sans-serif", cursor: "pointer" }}>← Retour</button>
         </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#0D0D0F", fontFamily: "sans-serif" }}>
+      <div style={{ maxWidth: 600, margin: "0 auto", padding: "16px 20px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <div style={{ color: "#E8748A", fontSize: 16, fontWeight: "bold" }}>Admin Dating Romance</div>
+          <button onClick={() => { setLoggedIn(false); onLogout(); }} style={{ background: "none", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 4, padding: "6px 12px", color: "rgba(255,255,255,0.5)", fontSize: 11, cursor: "pointer" }}>Déconnexion</button>
+        </div>
+
+        {!selectedSession ? (
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <div style={{ color: "#fff", fontSize: 16 }}>Sessions ({sessions.length})</div>
+              <button onClick={() => setShowAddSession(true)} style={{ background: "linear-gradient(135deg, #E8748A, #C94060)", border: "none", borderRadius: 4, padding: "8px 14px", color: "#fff", fontSize: 12, cursor: "pointer", fontWeight: "bold" }}>+ Nouvelle session</button>
+            </div>
+            {sessions.map(s => (
+              <div key={s.id} style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "12px 16px", marginBottom: 8, cursor: "pointer" }}>
+                <div onClick={() => { setSelectedSession(s); loadParticipants(s.id); loadMatches(s.id); }} style={{ display: "flex", justifyContent: "space-between" }}>
+                  <div>
+                    <div style={{ color: "#E8748A", fontSize: 11, marginBottom: 2 }}>{s.date} · {s.time}</div>
+                    <div style={{ color: "#fff", fontSize: 14 }}>{s.ville} — {s.age}</div>
+                  </div>
+                  <div style={{ textAlign: "right", color: "rgba(255,255,255,0.5)", fontSize: 11 }}>
+                    <div>{s.activeParticipants}/{s.totalParticipants} actifs</div>
+                    <div>{s.submittedCount} ont voté</div>
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                  <button onClick={(ev) => { ev.stopPropagation(); setEditSession(s); }} style={{ background: "rgba(255,255,255,0.06)", border: "none", borderRadius: 4, padding: "4px 10px", color: "rgba(255,255,255,0.5)", fontSize: 10, cursor: "pointer" }}>✏️ Modifier</button>
+                  <button onClick={(ev) => { ev.stopPropagation(); if (window.confirm("Supprimer cette session ?")) apiCall({ action: "adminDeleteSession", id: s.id }).then(() => loadSessions()); }} style={{ background: "rgba(255,60,60,0.1)", border: "none", borderRadius: 4, padding: "4px 10px", color: "rgba(255,80,80,0.7)", fontSize: 10, cursor: "pointer" }}>🗑 Supprimer</button>
+                </div>
+              </div>
+            ))}
+            {showAddSession && <SessionForm apiCall={apiCall} onDone={() => { setShowAddSession(false); loadSessions(); }} onCancel={() => setShowAddSession(false)} />}
+            {editSession && <SessionForm apiCall={apiCall} session={editSession} onDone={() => { setEditSession(null); loadSessions(); }} onCancel={() => setEditSession(null)} />}
+          </div>
+        ) : (
+          <div>
+            <button onClick={() => { setSelectedSession(null); setScreen("sessions"); }} style={{ background: "none", border: "none", color: "#E8748A", fontSize: 13, cursor: "pointer", padding: 0, marginBottom: 12 }}>← Retour aux sessions</button>
+            <div style={{ color: "#fff", fontSize: 16, marginBottom: 4 }}>{selectedSession.ville} — {selectedSession.date} · {selectedSession.time}</div>
+            <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 12, marginBottom: 16 }}>{selectedSession.age}</div>
+
+            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+              <button onClick={() => setScreen("participants")} style={{ flex: 1, background: screen === "participants" ? "rgba(232,116,138,0.2)" : "rgba(255,255,255,0.04)", border: screen === "participants" ? "1px solid #E8748A" : "1px solid rgba(255,255,255,0.1)", borderRadius: 6, padding: "8px 0", color: screen === "participants" ? "#E8748A" : "rgba(255,255,255,0.5)", fontSize: 12, cursor: "pointer" }}>Participants ({participants.length})</button>
+              <button onClick={() => setScreen("matches")} style={{ flex: 1, background: screen === "matches" ? "rgba(232,116,138,0.2)" : "rgba(255,255,255,0.04)", border: screen === "matches" ? "1px solid #E8748A" : "1px solid rgba(255,255,255,0.1)", borderRadius: 6, padding: "8px 0", color: screen === "matches" ? "#E8748A" : "rgba(255,255,255,0.5)", fontSize: 12, cursor: "pointer" }}>Matchs ({matches.length})</button>
+            </div>
+
+            {screen === "participants" && (
+              <div>
+                <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+                  <button onClick={() => setShowAdd(true)} style={{ background: "linear-gradient(135deg, #E8748A, #C94060)", border: "none", borderRadius: 4, padding: "8px 14px", color: "#fff", fontSize: 12, cursor: "pointer", fontWeight: "bold" }}>+ Ajouter</button>
+                </div>
+                {showAdd && <AddParticipantForm apiCall={apiCall} sessionId={selectedSession.id} onDone={() => { setShowAdd(false); loadParticipants(selectedSession.id); }} onCancel={() => setShowAdd(false)} />}
+                {editPart && <EditParticipantForm apiCall={apiCall} participant={editPart} sessionId={selectedSession.id} onDone={() => { setEditPart(null); loadParticipants(selectedSession.id); }} onCancel={() => setEditPart(null)} />}
+                {participants.map(p => (
+                  <div key={p.id} style={{ background: "rgba(255,255,255,0.03)", border: `1px solid ${p.statut === "annulation" || p.statut === "Annulation" ? "rgba(255,60,60,0.2)" : "rgba(255,255,255,0.06)"}`, borderRadius: 8, padding: "10px 14px", marginBottom: 6 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                      <div>
+                        <div style={{ color: "#fff", fontSize: 13 }}>{p.prenom} {p.nom} <span style={{ color: p.genre === "F" ? "rgba(255,150,200,0.6)" : "rgba(100,150,255,0.6)", fontSize: 10 }}>({p.genre})</span></div>
+                        <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, marginTop: 2 }}>{p.email}</div>
+                        {p.age && <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 10, marginTop: 1 }}>{p.age} ans · {p.ville || "?"}</div>}
+                        <div style={{ color: p.statut === "annulation" || p.statut === "Annulation" ? "rgba(255,80,80,0.8)" : "rgba(100,200,100,0.7)", fontSize: 10, fontWeight: "bold", textTransform: "uppercase", marginTop: 2 }}>{p.statut}</div>
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
+                        <div style={{ color: p.hasSubmitted ? "rgba(100,200,100,0.7)" : "rgba(255,200,50,0.6)", fontSize: 10, fontWeight: "bold" }}>{p.hasSubmitted ? "✓ A voté" : "⏳ Pas voté"}</div>
+                        {p.hasSubmitted && <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 10 }}>{p.likesSent.length} like(s)</div>}
+                        {p.likesReceived.length > 0 && <div style={{ color: "rgba(232,116,138,0.6)", fontSize: 10 }}>{p.likesReceived.length} reçu(s)</div>}
+                      </div>
+                    </div>
+                    {p.hasSubmitted && p.likesSent.length > 0 && (
+                      <div style={{ marginTop: 6, padding: "6px 8px", background: "rgba(255,255,255,0.02)", borderRadius: 6 }}>
+                        <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 9, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Likes envoyés</div>
+                        {p.likesSent.map((l,i) => <div key={i} style={{ color: "rgba(255,255,255,0.5)", fontSize: 11 }}>{l.type === "love" ? "❤️" : "💚"} {l.toPrenom} {l.toNom ? l.toNom.substring(0,2)+"." : ""}</div>)}
+                      </div>
+                    )}
+                    {p.likesReceived.length > 0 && (
+                      <div style={{ marginTop: 6, padding: "6px 8px", background: "rgba(232,116,138,0.04)", borderRadius: 6 }}>
+                        <div style={{ color: "rgba(232,116,138,0.5)", fontSize: 9, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Likes reçus</div>
+                        {p.likesReceived.map((l,i) => <div key={i} style={{ color: "rgba(255,255,255,0.5)", fontSize: 11 }}>{l.type === "love" ? "❤️" : "💚"} {l.fromPrenom} {l.fromNom ? l.fromNom.substring(0,2)+"." : ""}</div>)}
+                      </div>
+                    )}
+                    <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                      <button onClick={() => setEditPart(p)} style={{ background: "rgba(255,255,255,0.06)", border: "none", borderRadius: 4, padding: "4px 8px", color: "rgba(255,255,255,0.5)", fontSize: 10, cursor: "pointer" }}>✏️</button>
+                      <button onClick={() => { if (window.confirm("Supprimer " + p.prenom + " ?")) apiCall({ action: "adminDeleteParticipant", id: p.id }).then(() => loadParticipants(selectedSession.id)); }} style={{ background: "rgba(255,60,60,0.1)", border: "none", borderRadius: 4, padding: "4px 8px", color: "rgba(255,80,80,0.7)", fontSize: 10, cursor: "pointer" }}>🗑</button>
+                      {p.hasSubmitted && <button onClick={() => { if (window.confirm("Réinitialiser les likes de " + p.prenom + " ?")) apiCall({ action: "adminResetLikes", email: p.email, sessionId: selectedSession.id }).then(() => loadParticipants(selectedSession.id)); }} style={{ background: "rgba(255,200,50,0.1)", border: "none", borderRadius: 4, padding: "4px 8px", color: "rgba(255,200,50,0.7)", fontSize: 10, cursor: "pointer" }}>🔄 Reset likes</button>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {screen === "matches" && (
+              <div>
+                {matches.length === 0 ? (
+                  <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 13, fontStyle: "italic", textAlign: "center", padding: 20 }}>Aucun match pour cette session.</div>
+                ) : matches.map((m,i) => (
+                  <div key={i} style={{ background: "rgba(232,116,138,0.06)", border: "1px solid rgba(232,116,138,0.2)", borderRadius: 10, padding: "12px 16px", marginBottom: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12 }}>
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ color: "#fff", fontSize: 13 }}>{m.person1.prenom} {m.person1.nom ? m.person1.nom.substring(0,2)+"." : ""}</div>
+                        <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 10 }}>{m.person1.email}</div>
+                      </div>
+                      <div style={{ fontSize: 20 }}>{m.type === "love" ? "❤️" : "💚"}</div>
+                      <div>
+                        <div style={{ color: "#fff", fontSize: 13 }}>{m.person2.prenom} {m.person2.nom ? m.person2.nom.substring(0,2)+"." : ""}</div>
+                        <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 10 }}>{m.person2.email}</div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SessionForm({ apiCall, session, onDone, onCancel }) {
+  const [ville, setVille] = React.useState(session ? session.ville : "");
+  const [mois, setMois] = React.useState(session ? session.mois : "");
+  const [date, setDate] = React.useState(session ? session.date : "");
+  const [time, setTime] = React.useState(session ? session.time : "");
+  const [age, setAge] = React.useState(session ? session.age : "");
+  const [spots, setSpots] = React.useState(session ? session.spots : 30);
+  const inputStyle = { width: "100%", background: "rgba(255,255,255,0.12)", border: "1px solid rgba(232,116,138,0.4)", borderRadius: 4, padding: "9px 12px", color: "#fff", fontSize: 12, fontFamily: "sans-serif", outline: "none", boxSizing: "border-box" };
+  const handleSubmit = () => {
+    const params = { ville, mois, date, time, age, spots };
+    if (session) { apiCall({ action: "adminUpdateSession", id: session.id, ...params }).then(onDone); }
+    else { apiCall({ action: "adminCreateSession", ...params }).then(onDone); }
+  };
+  return (
+    <div style={{ background: "rgba(232,116,138,0.06)", border: "1px solid rgba(232,116,138,0.3)", borderRadius: 10, padding: 16, marginBottom: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ color: "#E8748A", fontSize: 12, fontWeight: "bold" }}>{session ? "Modifier la session" : "Nouvelle session"}</div>
+      <input placeholder="Ville" value={ville} onChange={e => setVille(e.target.value)} style={inputStyle} />
+      <input placeholder="Mois (ex: juin 2026)" value={mois} onChange={e => setMois(e.target.value)} style={inputStyle} />
+      <input placeholder="Date (ex: Sam. 20/06)" value={date} onChange={e => setDate(e.target.value)} style={inputStyle} />
+      <input placeholder="Horaire (ex: 14h – 17h)" value={time} onChange={e => setTime(e.target.value)} style={inputStyle} />
+      <input placeholder="Tranche d'âge (ex: 35 – 43 ans)" value={age} onChange={e => setAge(e.target.value)} style={inputStyle} />
+      <input placeholder="Places" type="number" value={spots} onChange={e => setSpots(e.target.value)} style={inputStyle} />
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={handleSubmit} style={{ flex: 1, background: "linear-gradient(135deg, #E8748A, #C94060)", border: "none", borderRadius: 4, padding: "8px 0", color: "#fff", fontSize: 12, fontWeight: "bold", cursor: "pointer" }}>{session ? "Modifier" : "Créer"}</button>
+        <button onClick={onCancel} style={{ flex: 1, background: "rgba(255,255,255,0.06)", border: "none", borderRadius: 4, padding: "8px 0", color: "rgba(255,255,255,0.5)", fontSize: 12, cursor: "pointer" }}>Annuler</button>
+      </div>
+    </div>
+  );
+}
+
+function AddParticipantForm({ apiCall, sessionId, onDone, onCancel }) {
+  const [prenom, setPrenom] = React.useState("");
+  const [nom, setNom] = React.useState("");
+  const [email, setEmail] = React.useState("");
+  const [ville, setVille] = React.useState("");
+  const [genre, setGenre] = React.useState("H");
+  const [age, setAge] = React.useState("");
+  const [msg, setMsg] = React.useState("");
+  const inputStyle = { width: "100%", background: "rgba(255,255,255,0.12)", border: "1px solid rgba(232,116,138,0.4)", borderRadius: 4, padding: "9px 12px", color: "#fff", fontSize: 12, fontFamily: "sans-serif", outline: "none", boxSizing: "border-box" };
+  const handleAdd = () => {
+    if (!prenom || !nom || !email || !genre) { setMsg("Remplissez tous les champs obligatoires."); return; }
+    apiCall({ action: "adminAddParticipant", sessionId, prenom, nom, email, ville, genre, age }).then(d => {
+      if (d.success) { setMsg("✓ Ajouté ! PIN : " + d.pin); setTimeout(onDone, 2000); }
+    });
+  };
+  return (
+    <div style={{ background: "rgba(232,116,138,0.06)", border: "1px solid rgba(232,116,138,0.3)", borderRadius: 10, padding: 16, marginBottom: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ color: "#E8748A", fontSize: 12, fontWeight: "bold" }}>Ajouter un participant</div>
+      <input placeholder="Prénom *" value={prenom} onChange={e => setPrenom(e.target.value)} style={inputStyle} />
+      <input placeholder="Nom *" value={nom} onChange={e => setNom(e.target.value)} style={inputStyle} />
+      <input placeholder="Email *" value={email} onChange={e => setEmail(e.target.value)} style={inputStyle} />
+      <input placeholder="Ville" value={ville} onChange={e => setVille(e.target.value)} style={inputStyle} />
+      <input placeholder="Âge" value={age} onChange={e => setAge(e.target.value)} style={inputStyle} />
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={() => setGenre("H")} style={{ flex: 1, background: genre === "H" ? "rgba(100,150,255,0.2)" : "rgba(255,255,255,0.04)", border: genre === "H" ? "1px solid rgba(100,150,255,0.5)" : "1px solid rgba(255,255,255,0.1)", borderRadius: 4, padding: "8px 0", color: "#fff", fontSize: 12, cursor: "pointer" }}>Homme</button>
+        <button onClick={() => setGenre("F")} style={{ flex: 1, background: genre === "F" ? "rgba(255,150,200,0.2)" : "rgba(255,255,255,0.04)", border: genre === "F" ? "1px solid rgba(255,150,200,0.5)" : "1px solid rgba(255,255,255,0.1)", borderRadius: 4, padding: "8px 0", color: "#fff", fontSize: 12, cursor: "pointer" }}>Femme</button>
+      </div>
+      {msg && <div style={{ color: "#E8748A", fontSize: 12, textAlign: "center" }}>{msg}</div>}
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={handleAdd} style={{ flex: 1, background: "linear-gradient(135deg, #E8748A, #C94060)", border: "none", borderRadius: 4, padding: "8px 0", color: "#fff", fontSize: 12, fontWeight: "bold", cursor: "pointer" }}>Ajouter</button>
+        <button onClick={onCancel} style={{ flex: 1, background: "rgba(255,255,255,0.06)", border: "none", borderRadius: 4, padding: "8px 0", color: "rgba(255,255,255,0.5)", fontSize: 12, cursor: "pointer" }}>Annuler</button>
+      </div>
+    </div>
+  );
+}
+
+function EditParticipantForm({ apiCall, participant, sessionId, onDone, onCancel }) {
+  const [prenom, setPrenom] = React.useState(participant.prenom);
+  const [nom, setNom] = React.useState(participant.nom);
+  const [email, setEmail] = React.useState(participant.email);
+  const [ville, setVille] = React.useState(participant.ville || "");
+  const [genre, setGenre] = React.useState(participant.genre);
+  const [statut, setStatut] = React.useState(participant.statut || "participation");
+  const [age, setAge] = React.useState(participant.age || "");
+  const inputStyle = { width: "100%", background: "rgba(255,255,255,0.12)", border: "1px solid rgba(232,116,138,0.4)", borderRadius: 4, padding: "9px 12px", color: "#fff", fontSize: 12, fontFamily: "sans-serif", outline: "none", boxSizing: "border-box" };
+  const handleSave = () => {
+    apiCall({ action: "adminUpdateParticipant", id: participant.id, sessionId, prenom, nom, email, ville, genre, statut, age }).then(onDone);
+  };
+  return (
+    <div style={{ background: "rgba(232,116,138,0.06)", border: "1px solid rgba(232,116,138,0.3)", borderRadius: 10, padding: 16, marginBottom: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ color: "#E8748A", fontSize: 12, fontWeight: "bold" }}>Modifier {participant.prenom}</div>
+      <input placeholder="Prénom" value={prenom} onChange={e => setPrenom(e.target.value)} style={inputStyle} />
+      <input placeholder="Nom" value={nom} onChange={e => setNom(e.target.value)} style={inputStyle} />
+      <input placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} style={inputStyle} />
+      <input placeholder="Ville" value={ville} onChange={e => setVille(e.target.value)} style={inputStyle} />
+      <input placeholder="Âge" value={age} onChange={e => setAge(e.target.value)} style={inputStyle} />
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={() => setGenre("H")} style={{ flex: 1, background: genre === "H" ? "rgba(100,150,255,0.2)" : "rgba(255,255,255,0.04)", border: genre === "H" ? "1px solid rgba(100,150,255,0.5)" : "1px solid rgba(255,255,255,0.1)", borderRadius: 4, padding: "8px 0", color: "#fff", fontSize: 12, cursor: "pointer" }}>Homme</button>
+        <button onClick={() => setGenre("F")} style={{ flex: 1, background: genre === "F" ? "rgba(255,150,200,0.2)" : "rgba(255,255,255,0.04)", border: genre === "F" ? "1px solid rgba(255,150,200,0.5)" : "1px solid rgba(255,255,255,0.1)", borderRadius: 4, padding: "8px 0", color: "#fff", fontSize: 12, cursor: "pointer" }}>Femme</button>
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={() => setStatut("participation")} style={{ flex: 1, background: statut === "participation" ? "rgba(100,200,100,0.2)" : "rgba(255,255,255,0.04)", border: statut === "participation" ? "1px solid rgba(100,200,100,0.5)" : "1px solid rgba(255,255,255,0.1)", borderRadius: 4, padding: "8px 0", color: "#fff", fontSize: 12, cursor: "pointer" }}>Participation</button>
+        <button onClick={() => setStatut("annulation")} style={{ flex: 1, background: statut === "annulation" ? "rgba(255,60,60,0.2)" : "rgba(255,255,255,0.04)", border: statut === "annulation" ? "1px solid rgba(255,60,60,0.5)" : "1px solid rgba(255,255,255,0.1)", borderRadius: 4, padding: "8px 0", color: "#fff", fontSize: 12, cursor: "pointer" }}>Annulation</button>
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={handleSave} style={{ flex: 1, background: "linear-gradient(135deg, #E8748A, #C94060)", border: "none", borderRadius: 4, padding: "8px 0", color: "#fff", fontSize: 12, fontWeight: "bold", cursor: "pointer" }}>Sauvegarder</button>
+        <button onClick={onCancel} style={{ flex: 1, background: "rgba(255,255,255,0.06)", border: "none", borderRadius: 4, padding: "8px 0", color: "rgba(255,255,255,0.5)", fontSize: 12, cursor: "pointer" }}>Annuler</button>
       </div>
     </div>
   );
