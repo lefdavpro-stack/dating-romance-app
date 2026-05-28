@@ -119,7 +119,7 @@ const loadParticipants = (sessionId) => {
           {screen === "welcome" && <WelcomeScreen onEnter={() => setScreen("sessions")} />}
           {screen === "sessions" && <SessionsScreen sessions={sessions} onSelect={(s) => { setSelectedSession(s); loadParticipants(s.id); setScreen("participants"); }} onBack={() => setScreen("login")} />}
           {screen === "participants" && <ParticipantsScreen session={selectedSession} participants={participants} likes={likes} likeAnim={likeAnim} onLike={handleLike} onValidate={handleValidate} onBack={() => { setLikes({}); setSelectedSession(null); setScreen("sessions"); }} />}
-          {screen === "results" && resultsData && <ResultsScreen resultsData={resultsData} pendingResponses={pendingResponses} onRespond={(id, resp) => { setPendingResponses(prev => ({...prev, [id]: resp})); if (resp === "accepted") { const p = resultsData.pending.find(x => x.id === id); if (p) fetch(`${API_URL}?action=acceptLike&fromEmail=${encodeURIComponent(user.email)}&acceptedEmail=${encodeURIComponent(p.email)}&type=${p.theirType}`); } }} onFinish={() => setScreen("thankyou")} />}
+          {screen === "results" && resultsData && <ResultsScreen resultsData={resultsData} pendingResponses={pendingResponses} onRespond={(id, resp) => { setPendingResponses(prev => ({...prev, [id]: resp})); onRespond={(id, resp) => { setPendingResponses(prev => ({...prev, [id]: resp})); } } }} onFinish={() => setScreen("thankyou")} />}
           {screen === "thankyou" && <ThankYouScreen />}
         </div>
       </div>
