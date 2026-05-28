@@ -566,11 +566,12 @@ function ResultsScreen({ resultsData, pendingResponses, onRespond, onFinish }) {
                     {pendingResponses[p.id] === "accepted" ? "✓ Accepté" : "✕ Refusé"}
                   </div>
                 </div>
-                {pendingResponses[p.id] === "accepted" && p.contact && (
+                {pendingResponses[p.id] === "accepted" && (
                   <div style={{ background: "rgba(232,116,138,0.08)", border: "1px solid rgba(232,116,138,0.2)", borderRadius: 8, padding: "8px 12px", marginTop: 6 }}>
                     <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 10, fontFamily: "sans-serif", letterSpacing: 2, textTransform: "uppercase", marginBottom: 4 }}>Coordonnées</div>
                     <div style={{ color: "#fff", fontSize: 13, fontFamily: "sans-serif" }}>{p.prenom} {p.nom}</div>
-                    <div style={{ color: "#E8748A", fontSize: 13, fontFamily: "sans-serif", marginTop: 2 }}>{p.contact}</div>
+                    {p.contact && <div style={{ color: "#E8748A", fontSize: 13, fontFamily: "sans-serif", marginTop: 2 }}>{p.contact}</div>}
+                    {p.email && <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 12, fontFamily: "sans-serif", marginTop: 2 }}>{p.email}</div>}
                   </div>
                 )}
               </div>
